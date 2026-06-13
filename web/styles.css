@@ -139,6 +139,18 @@ label span,
   align-items: end;
 }
 
+.client-url-row {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: end;
+}
+
+input[readonly] {
+  color: var(--muted);
+}
+
 label {
   display: grid;
   gap: 7px;
@@ -249,12 +261,14 @@ label {
   }
 
   .mic-actions,
-  .connection-grid {
+  .connection-grid,
+  .client-url-row {
     width: 100%;
   }
 
   .mic-actions button,
-  .connection-grid button {
+  .connection-grid button,
+  .client-url-row button {
     width: 100%;
   }
 }

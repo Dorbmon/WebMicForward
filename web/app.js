@@ -10,6 +10,8 @@ const elements = {
   roomInput: $("roomInput"),
   tokenInput: $("tokenInput"),
   transportSelect: $("transportSelect"),
+  clientUrlInput: $("clientUrlInput"),
+  copyClientUrlButton: $("copyClientUrlButton"),
   connectButton: $("connectButton"),
   disconnectButton: $("disconnectButton"),
   startMicButton: $("startMicButton"),
@@ -101,6 +103,37 @@ function buildWsUrl() {
   }
 
   return wsUrl;
+}
+
+function buildClientWsUrl() {
+  const wsUrl = new URL("/ws", location.href);
+  wsUrl.protocol = location.protocol === "https:" ? "wss:" : "ws:";
+  wsUrl.searchParams.set("room", elements.roomInput.value.trim());
+  wsUrl.searchParams.set("role", "client");
+
+  const token = elements.tokenInput.value.trim();
+  if (token) {
+    wsUrl.searchParams.set("token", token);
+  }
+
+  return wsUrl;
+}
+
+function updateClientUrl() {
+  elements.clientUrlInput.value = buildClientWsUrl().toString();
+}
+
+async function copyClientUrl() {
+  updateClientUrl();
+  const value = elements.clientUrlInput.value;
+  try {
+    await navigator.clipboard.writeText(value);
+  } catch {
+    elements.clientUrlInput.focus();
+    elements.clientUrlInput.select();
+    document.execCommand("copy");
+  }
+  setStatus("客户端 URL 已复制", "is-live");
 }
 
 function connect() {
@@ -703,6 +736,12 @@ function refreshUi() {
 
 elements.connectButton.addEventListener("click", connect);
 elements.disconnectButton.addEventListener("click", disconnect);
+elements.copyClientUrlButton.addEventListener("click", () => {
+  copyClientUrl().catch((error) => {
+    console.error(error);
+    setStatus("复制失败", "is-error");
+  });
+});
 elements.startMicButton.addEventListener("click", () => {
   startMic().catch((error) => {
     console.error(error);
@@ -714,8 +753,11 @@ elements.stopMicButton.addEventListener("click", stopMic);
 elements.thresholdInput.addEventListener("input", refreshUi);
 elements.hangoverInput.addEventListener("input", refreshUi);
 elements.gateInput.addEventListener("change", refreshUi);
+elements.roomInput.addEventListener("input", updateClientUrl);
+elements.tokenInput.addEventListener("input", updateClientUrl);
 
 initRoom();
+updateClientUrl();
 void initConfig();
 drawIdleWaveform();
 refreshUi();

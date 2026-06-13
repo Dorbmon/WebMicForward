@@ -37,7 +37,7 @@ Realtime SFU 的 WebSocket adapter 要求 Cloudflare 从公网连回一个 `wss:
 - `client/WebMicForward.Core/`: Windows 音频设备枚举、WebSocket 接收、音频解包、WASAPI 输出核心库。
 - `client/WebMicForward.Client/`: 命令行客户端，适合脚本和调试。
 - `client/WebMicForward.Gui/`: Windows GUI 客户端，适合完整安装和配置流程。
-- `wrangler.toml`: Cloudflare Worker、Assets、Durable Object 配置。
+- `wrangler.template.toml`: 可上传的 Cloudflare Worker 配置模板。真实 `wrangler.toml` 是本地私有配置，不上传。
 
 ## 前置条件
 
@@ -148,7 +148,13 @@ npx wrangler whoami
 
 App Secret 只放到 Worker secret，不能写进前端代码，也不要提交到 Git。
 
-### 3. 配置 `wrangler.toml`
+### 3. 配置本地 `wrangler.toml`
+
+真实 `wrangler.toml` 可能包含自定义域名、房间 token、Realtime App ID 等本地配置，本仓库默认不上传它。第一次部署前先复制模板：
+
+```powershell
+Copy-Item wrangler.template.toml wrangler.toml
+```
 
 如果只部署 WebSocket PCM 模式，可以不配置 Realtime 变量。
 

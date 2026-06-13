@@ -6,3 +6,5 @@ obj/
 *.user
 *.suo
 *.log
+wrangler.toml
+.wrangler-dev.pid

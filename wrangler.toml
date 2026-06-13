@@ -1,0 +1,25 @@
+name = "web-mic-forward"
+main = "worker/src/index.ts"
+compatibility_date = "2026-06-13"
+
+[assets]
+directory = "./web"
+binding = "ASSETS"
+
+[[durable_objects.bindings]]
+name = "ROOMS"
+class_name = "RoomDurableObject"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RoomDurableObject"]
+
+# Optional shared secret for rooms. If set, both browser and client must pass
+# ?token=... in the WebSocket URL.
+# [vars]
+# ROOM_TOKEN = "change-me"
+# SFU_API_BASE = "https://rtc.live.cloudflare.com/v1"
+# REALTIME_SFU_APP_ID = "your-realtime-app-id"
+#
+# Store the Realtime App Secret as a secret, not a plain var:
+# npx wrangler secret put REALTIME_SFU_BEARER_TOKEN

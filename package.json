@@ -1,0 +1,22 @@
+{
+  "name": "web-mic-forward",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "client:build": "dotnet build client/WebMicForward.Client/WebMicForward.Client.csproj",
+    "gui:build": "dotnet build client/WebMicForward.Gui/WebMicForward.Gui.csproj",
+    "gui:publish": "dotnet publish client/WebMicForward.Gui/WebMicForward.Gui.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "4.20260613.1",
+    "typescript": "6.0.3",
+    "wrangler": "4.100.0"
+  },
+  "overrides": {
+    "esbuild": "0.28.1"
+  }
+}

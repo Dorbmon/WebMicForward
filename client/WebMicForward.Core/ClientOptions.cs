@@ -7,6 +7,7 @@ public sealed class ClientOptions
     public string? Token { get; init; }
     public string? DeviceSelector { get; init; }
     public int LatencyMilliseconds { get; init; } = 80;
+    public int VolumePercent { get; init; } = 100;
     public bool ListDevices { get; init; }
     public bool ShowHelp { get; init; }
 
@@ -103,6 +104,13 @@ public sealed class ClientOptions
                     }
                     options.LatencyMilliseconds = latency;
                     break;
+                case "--volume-percent":
+                    if (!int.TryParse(ReadValue(args, ref i, arg), out var volume) || volume < 0 || volume > 500)
+                    {
+                        throw new ArgumentException("--volume-percent must be between 0 and 500.");
+                    }
+                    options.VolumePercent = volume;
+                    break;
                 default:
                     throw new ArgumentException($"Unknown argument '{arg}'. Run --help.");
             }
@@ -129,6 +137,7 @@ public sealed class ClientOptions
         public string? Token { get; set; }
         public string? DeviceSelector { get; set; }
         public int LatencyMilliseconds { get; set; } = 80;
+        public int VolumePercent { get; set; } = 100;
         public bool ListDevices { get; set; }
         public bool ShowHelp { get; set; }
 
@@ -139,6 +148,7 @@ public sealed class ClientOptions
             Token = Token,
             DeviceSelector = DeviceSelector,
             LatencyMilliseconds = LatencyMilliseconds,
+            VolumePercent = VolumePercent,
             ListDevices = ListDevices,
             ShowHelp = ShowHelp
         };

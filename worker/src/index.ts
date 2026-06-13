@@ -74,18 +74,56 @@ function asString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
+function normalizeRealtimeSdp(value: unknown): string | undefined {
+  if (typeof value !== "string" || !value.trim()) {
+    return undefined;
+  }
+
+  let sdp = value.replace(/\r?\n/g, "\r\n").replace(/\r(?!\n)/g, "\r\n");
+  if (!sdp.endsWith("\r\n")) {
+    sdp += "\r\n";
+  }
+  return sdp;
+}
+
+function findTrackError(data: unknown): unknown | undefined {
+  if (!data || typeof data !== "object" || !Array.isArray((data as { tracks?: unknown }).tracks)) {
+    return undefined;
+  }
+
+  return (data as { tracks: Array<Record<string, unknown>> }).tracks.find(
+    (track) => track.errorCode || track.errorDescription
+  );
+}
+
+function findRealtimeError(data: unknown): unknown | undefined {
+  if (!data || typeof data !== "object") {
+    return undefined;
+  }
+
+  if ((data as { errorCode?: unknown }).errorCode || (data as { errorDescription?: unknown }).errorDescription) {
+    return data;
+  }
+
+  return findTrackError(data);
+}
+
 async function realtimeApi(
   env: Env,
+  operation: string,
   path: string,
   init: RequestInit = {}
 ): Promise<{ ok: true; data: unknown } | { ok: false; response: Response }> {
-  const response = await fetch(`${getRealtimeApiBase(env)}${path}`, {
+  const endpoint = `${getRealtimeApiBase(env)}${path}`;
+  const headers = new Headers(init.headers);
+  headers.set("authorization", `Bearer ${env.REALTIME_SFU_BEARER_TOKEN}`);
+  if (init.body !== undefined && init.body !== null && !headers.has("content-type")) {
+    headers.set("content-type", "application/json");
+  }
+
+  const response = await fetch(endpoint, {
     ...init,
-    headers: {
-      "authorization": `Bearer ${env.REALTIME_SFU_BEARER_TOKEN}`,
-      "content-type": "application/json",
-      ...init.headers
-    }
+    headers
   });
 
   const text = await response.text();
@@ -104,8 +142,27 @@ async function realtimeApi(
       response: json(
         {
           error: "Cloudflare Realtime API request failed.",
+          operation,
           status: response.status,
+          endpoint: path,
           details: data
+        },
+        { status: 502 }
+      )
+    };
+  }
+
+  const realtimeError = findRealtimeError(data);
+  if (realtimeError) {
+    return {
+      ok: false,
+      response: json(
+        {
+          error: "Cloudflare Realtime API operation failed.",
+          operation,
+          status: response.status,
+          endpoint: path,
+          details: realtimeError
         },
         { status: 502 }
       )
@@ -144,7 +201,7 @@ export default {
       }
 
       const room = asString(body.room);
-      const sdp = asString(body.sdp);
+      const sdp = normalizeRealtimeSdp(body.sdp);
       const type = asString(body.type) || "offer";
       const mid = asString(body.mid);
       const trackName = asString(body.trackName) || `mic-${crypto.randomUUID()}`;
@@ -158,9 +215,8 @@ export default {
       }
 
       const appId = encodeURIComponent(env.REALTIME_SFU_APP_ID!);
-      const session = await realtimeApi(env, `/apps/${appId}/sessions/new`, {
-        method: "POST",
-        body: JSON.stringify({})
+      const session = await realtimeApi(env, "create-session", `/apps/${appId}/sessions/new`, {
+        method: "POST"
       });
       if (!session.ok) {
         return session.response;
@@ -171,7 +227,7 @@ export default {
         return json({ error: "Realtime API did not return a sessionId.", details: session.data }, { status: 502 });
       }
 
-      const tracks = await realtimeApi(env, `/apps/${appId}/sessions/${encodeURIComponent(sessionId)}/tracks/new`, {
+      const tracks = await realtimeApi(env, "publish-track", `/apps/${appId}/sessions/${encodeURIComponent(sessionId)}/tracks/new`, {
         method: "POST",
         body: JSON.stringify({
           sessionDescription: { type, sdp },
@@ -232,7 +288,7 @@ export default {
       }
 
       const appId = encodeURIComponent(env.REALTIME_SFU_APP_ID!);
-      const adapter = await realtimeApi(env, `/apps/${appId}/adapters/websocket/new`, {
+      const adapter = await realtimeApi(env, "start-websocket-adapter", `/apps/${appId}/adapters/websocket/new`, {
         method: "POST",
         body: JSON.stringify({
           tracks: [
@@ -278,7 +334,7 @@ export default {
       }
 
       const appId = encodeURIComponent(env.REALTIME_SFU_APP_ID!);
-      const closed = await realtimeApi(env, `/apps/${appId}/adapters/websocket/close`, {
+      const closed = await realtimeApi(env, "close-websocket-adapter", `/apps/${appId}/adapters/websocket/close`, {
         method: "POST",
         body: JSON.stringify({ tracks: [{ adapterId }] })
       });

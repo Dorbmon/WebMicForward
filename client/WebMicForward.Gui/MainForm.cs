@@ -12,6 +12,7 @@ public sealed class MainForm : Form
     private readonly TextBox _roomBox = new() { Text = "default" };
     private readonly TextBox _tokenBox = new() { UseSystemPasswordChar = true };
     private readonly NumericUpDown _latencyBox = new() { Minimum = 20, Maximum = 1000, Value = 80, Increment = 10 };
+    private readonly NumericUpDown _volumeBox = new() { Minimum = 0, Maximum = 500, Value = 100, Increment = 10 };
     private readonly ComboBox _deviceCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList };
     private readonly Label _deviceStatusLabel = new() { AutoSize = true };
     private readonly Label _statusLabel = new() { AutoSize = true, Text = "Idle" };
@@ -127,7 +128,7 @@ public sealed class MainForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 4,
-            RowCount = 4,
+            RowCount = 5,
             AutoSize = true
         };
         grid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
@@ -140,6 +141,7 @@ public sealed class MainForm : Form
         AddLabeledControl(grid, "Token", _tokenBox, 2, 1);
         AddLabeledControl(grid, "Output device", _deviceCombo, 0, 2, 3);
         AddLabeledControl(grid, "Latency ms", _latencyBox, 0, 3);
+        AddLabeledControl(grid, "Output volume %", _volumeBox, 0, 4);
         grid.Controls.Add(_refreshButton, 2, 3);
         grid.Controls.Add(_copyWebButton, 3, 3);
 
@@ -238,6 +240,13 @@ public sealed class MainForm : Form
         };
         _startButton.Click += (_, _) => StartReceiver();
         _stopButton.Click += (_, _) => StopReceiver();
+        _volumeBox.ValueChanged += (_, _) =>
+        {
+            if (_sink is not null)
+            {
+                _sink.VolumePercent = (int)_volumeBox.Value;
+            }
+        };
     }
 
     private void RefreshDevices()
@@ -279,6 +288,7 @@ public sealed class MainForm : Form
             _receiverCancellation = new CancellationTokenSource();
             SetRunningState(true);
             AppendLog($"Output device: {_sink.DeviceName}");
+            AppendLog($"Output volume: {_sink.VolumePercent}%");
             AppendLog($"WebSocket: {options.BuildWebSocketUri()}");
 
             _receiverTask = Task.Run(() => receiver.RunAsync(_receiverCancellation.Token));
@@ -318,7 +328,8 @@ public sealed class MainForm : Form
             Room = _roomBox.Text.Trim(),
             Token = string.IsNullOrWhiteSpace(_tokenBox.Text) ? null : _tokenBox.Text.Trim(),
             DeviceSelector = selectedDevice?.Selector,
-            LatencyMilliseconds = (int)_latencyBox.Value
+            LatencyMilliseconds = (int)_latencyBox.Value,
+            VolumePercent = (int)_volumeBox.Value
         };
     }
 
@@ -381,6 +392,7 @@ public sealed class MainForm : Form
             _roomBox.Text = settings.Room;
             _tokenBox.Text = settings.Token ?? "";
             _latencyBox.Value = Math.Clamp(settings.LatencyMilliseconds, (int)_latencyBox.Minimum, (int)_latencyBox.Maximum);
+            _volumeBox.Value = Math.Clamp(settings.VolumePercent, (int)_volumeBox.Minimum, (int)_volumeBox.Maximum);
         }
         catch (Exception ex)
         {
@@ -398,7 +410,8 @@ public sealed class MainForm : Form
                 Server = _serverBox.Text.Trim(),
                 Room = _roomBox.Text.Trim(),
                 Token = string.IsNullOrWhiteSpace(_tokenBox.Text) ? null : _tokenBox.Text.Trim(),
-                LatencyMilliseconds = (int)_latencyBox.Value
+                LatencyMilliseconds = (int)_latencyBox.Value,
+                VolumePercent = (int)_volumeBox.Value
             };
             File.WriteAllText(SettingsPath, JsonSerializer.Serialize(settings, new JsonSerializerOptions { WriteIndented = true }));
         }
@@ -422,5 +435,6 @@ public sealed class MainForm : Form
         public string Room { get; set; } = "default";
         public string? Token { get; set; }
         public int LatencyMilliseconds { get; set; } = 80;
+        public int VolumePercent { get; set; } = 100;
     }
 }

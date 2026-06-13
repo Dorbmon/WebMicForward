@@ -348,7 +348,19 @@ dotnet run --project client/WebMicForward.Client -- --server wss://web-mic-forwa
 
 ## 音频包格式
 
-旧版 `WebSocket PCM` 的每个二进制 WebSocket 消息是一帧音频：
+`WebSocket PCM` 的每个二进制 WebSocket 消息是一帧音频。当前网页发送 `WMF2`，多带一个源端发送时间戳用于接收端估算延迟：
+
+```text
+0..3    ASCII "WMF2"
+4..7    uint32 little-endian sequence
+8..11   uint32 little-endian sampleRate, 当前固定 48000
+12..13  uint16 little-endian channels, 当前固定 1
+14..15  uint16 little-endian samplesPerChannel, 当前 960
+16..23  uint64 little-endian capturedUnixMilliseconds
+24..    int16 little-endian PCM samples
+```
+
+客户端仍兼容旧版 `WMF1` 包：
 
 ```text
 0..3    ASCII "WMF1"
@@ -408,6 +420,22 @@ npm run deploy
 - 浏览器是否允许当前 Worker 域名使用麦克风。
 - 页面是否在 HTTPS 下打开。生产环境必须使用 HTTPS。
 - 系统隐私设置是否允许浏览器访问麦克风。
+
+### 手机熄屏后停止发送
+
+移动浏览器在锁屏或页面不可见后可能会挂起网页、麦克风采集或 WebSocket。网页会在麦克风启动后请求 Screen Wake Lock，尽量防止自动熄屏；如果用户手动按电源键锁屏，纯网页通常不能可靠继续发送音频。
+
+### 音量太低
+
+先看网页的 `RMS` 和 `峰值`。如果网页端数值本身很低，先调高网页里的 `输入增益`；如果峰值接近或超过 `1.000`，说明已经削波，不要继续调高输入增益。
+
+如果网页端电平正常但目标应用听起来仍然小，再调高 GUI 里的 `Output volume %`。命令行可以使用：
+
+```powershell
+dotnet run --project client/WebMicForward.Client -- --server wss://<worker>/ws --room my-room --volume-percent 200 --device "CABLE Input"
+```
+
+`--volume-percent` 默认是 `100`，范围是 `0-500`。超过 `100` 会放大 PCM，过高时可能出现削波失真。
 
 ### 音频延迟太高或卡顿
 

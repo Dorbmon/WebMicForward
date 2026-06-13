@@ -90,6 +90,23 @@ public sealed class AudioReceiver(ClientOptions options, AudioSink sink)
 
     private void ProcessAudioPacket(ReadOnlySpan<byte> packet)
     {
+        var receivedAt = DateTimeOffset.UtcNow;
+        if (TimestampedAudioPacket.TryRead(packet, out var timestampedPayload, out var timestampedChannels, out _, out var capturedUnixMilliseconds, out var timestampedError))
+        {
+            if (timestampedChannels == 1)
+            {
+                sink.AddMonoPcmAsStereo(timestampedPayload);
+            }
+            else
+            {
+                sink.AddPcm(timestampedPayload);
+            }
+
+            RecordAudioFrame(timestampedPayload.Length, "WMF2", receivedAt, capturedUnixMilliseconds);
+            PublishStats();
+            return;
+        }
+
         if (LegacyAudioPacket.TryRead(packet, out var legacyPayload, out var legacyChannels, out var legacyError))
         {
             if (legacyChannels == 1)
@@ -101,8 +118,7 @@ public sealed class AudioReceiver(ClientOptions options, AudioSink sink)
                 sink.AddPcm(legacyPayload);
             }
 
-            _stats.Frames += 1;
-            _stats.Bytes += legacyPayload.Length;
+            RecordAudioFrame(legacyPayload.Length, "WMF1", receivedAt);
             PublishStats();
             return;
         }
@@ -110,13 +126,14 @@ public sealed class AudioReceiver(ClientOptions options, AudioSink sink)
         if (RealtimeAdapterPacket.TryRead(packet, out var adapterPayload, out _, out _, out var adapterError))
         {
             sink.AddPcm(adapterPayload);
-            _stats.Frames += 1;
-            _stats.Bytes += adapterPayload.Length;
+            RecordAudioFrame(adapterPayload.Length, "SFU", receivedAt);
             PublishStats();
             return;
         }
 
-        var error = legacyError.Length > 0 ? legacyError : adapterError;
+        var error = timestampedError != "not a WMF2 packet" && timestampedError.Length > 0
+            ? timestampedError
+            : legacyError.Length > 0 ? legacyError : adapterError;
         _stats.InvalidPackets += 1;
         if (_stats.InvalidPackets <= 3)
         {
@@ -142,11 +159,61 @@ public sealed class AudioReceiver(ClientOptions options, AudioSink sink)
         }
 
         _nextStatsEvent = now.AddSeconds(1);
-        Publish("stats", $"frames={_stats.Frames} received={FormatBytes(_stats.Bytes)} buffered={sink.BufferedMilliseconds}ms invalid={_stats.InvalidPackets}");
+        UpdateLatencyStats();
+        Publish("stats", $"frames={_stats.Frames} received={FormatBytes(_stats.Bytes)} volume={sink.VolumePercent}% {FormatLatency()} invalid={_stats.InvalidPackets}");
     }
 
     private void Publish(string kind, string message) =>
         Event?.Invoke(this, new ReceiverEvent(kind, message, _stats.Clone(), sink.BufferedMilliseconds));
+
+    private void RecordAudioFrame(int payloadLength, string packetSource, DateTimeOffset receivedAt, ulong? capturedUnixMilliseconds = null)
+    {
+        _stats.Frames += 1;
+        _stats.Bytes += payloadLength;
+        _stats.PacketSource = packetSource;
+
+        if (capturedUnixMilliseconds is not { } captured)
+        {
+            _stats.ReceiveLatencyMilliseconds = null;
+            return;
+        }
+
+        var maxUnixMilliseconds = (ulong)DateTimeOffset.MaxValue.ToUnixTimeMilliseconds();
+        if (captured > maxUnixMilliseconds)
+        {
+            _stats.ReceiveLatencyMilliseconds = null;
+            return;
+        }
+
+        var capturedAt = DateTimeOffset.FromUnixTimeMilliseconds((long)captured);
+        var receiveLatency = (int)Math.Round((receivedAt - capturedAt).TotalMilliseconds);
+        _stats.ReceiveLatencyMilliseconds = receiveLatency is >= -1000 and <= 60000
+            ? Math.Max(0, receiveLatency)
+            : null;
+    }
+
+    private void UpdateLatencyStats()
+    {
+        _stats.BufferedMilliseconds = sink.BufferedMilliseconds;
+        _stats.RenderLatencyMilliseconds = sink.RenderLatencyMilliseconds;
+        _stats.EstimatedLatencyMilliseconds = _stats.ReceiveLatencyMilliseconds is { } receiveLatency
+            ? receiveLatency + _stats.BufferedMilliseconds + _stats.RenderLatencyMilliseconds
+            : null;
+    }
+
+    private string FormatLatency()
+    {
+        var buffer = _stats.BufferedMilliseconds;
+        var render = _stats.RenderLatencyMilliseconds;
+
+        if (_stats.ReceiveLatencyMilliseconds is { } receiveLatency &&
+            _stats.EstimatedLatencyMilliseconds is { } estimatedLatency)
+        {
+            return $"latency≈{estimatedLatency}ms (source={_stats.PacketSource} rx={receiveLatency}ms buffer={buffer}ms render≈{render}ms)";
+        }
+
+        return $"local≥{buffer + render}ms (source={_stats.PacketSource} no-rx-timestamp buffer={buffer}ms render≈{render}ms)";
+    }
 
     private static async Task SendTextAsync(ClientWebSocket webSocket, string text, CancellationToken cancellationToken)
     {
@@ -178,12 +245,22 @@ public sealed class ReceiverStats
     public long Bytes { get; set; }
     public long InvalidPackets { get; set; }
     public string LastPeerMessage { get; set; } = "";
+    public string PacketSource { get; set; } = "unknown";
+    public int? ReceiveLatencyMilliseconds { get; set; }
+    public int BufferedMilliseconds { get; set; }
+    public int RenderLatencyMilliseconds { get; set; }
+    public int? EstimatedLatencyMilliseconds { get; set; }
 
     internal ReceiverStats Clone() => new()
     {
         Frames = Frames,
         Bytes = Bytes,
         InvalidPackets = InvalidPackets,
-        LastPeerMessage = LastPeerMessage
+        LastPeerMessage = LastPeerMessage,
+        PacketSource = PacketSource,
+        ReceiveLatencyMilliseconds = ReceiveLatencyMilliseconds,
+        BufferedMilliseconds = BufferedMilliseconds,
+        RenderLatencyMilliseconds = RenderLatencyMilliseconds,
+        EstimatedLatencyMilliseconds = EstimatedLatencyMilliseconds
     };
 }

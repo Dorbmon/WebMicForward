@@ -62,6 +62,11 @@
       <section class="control-panel" aria-label="音频控制">
         <div class="control-row">
           <label class="slider-label">
+            <span>输入增益 <strong id="inputGainValue">100%</strong></span>
+            <input id="inputGainInput" type="range" min="0" max="2000" step="25" value="100" />
+          </label>
+
+          <label class="slider-label">
             <span>静音门限 <strong id="thresholdValue">0.012</strong></span>
             <input id="thresholdInput" type="range" min="0.001" max="0.08" step="0.001" value="0.012" />
           </label>
@@ -86,6 +91,10 @@
         <div>
           <span>RMS</span>
           <strong id="rmsValue">0.000</strong>
+        </div>
+        <div>
+          <span>峰值</span>
+          <strong id="peakValue">0.000</strong>
         </div>
         <div>
           <span>已发送</span>

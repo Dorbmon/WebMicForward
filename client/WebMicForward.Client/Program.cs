@@ -26,6 +26,7 @@ try
     sink.Start();
 
     Console.WriteLine($"Output device : {sink.DeviceName}");
+    Console.WriteLine($"Volume        : {sink.VolumePercent}%");
     Console.WriteLine($"WebSocket     : {options.BuildWebSocketUri()}");
     Console.WriteLine("Press Ctrl+C to stop.");
 
@@ -79,12 +80,13 @@ Options:
   --token <token>      Optional token when ROOM_TOKEN is configured on Worker
   --device <selector>  Render device index, ID, or name substring
   --latency-ms <n>     WASAPI render latency, 20-1000. Default: 80
+  --volume-percent <n> Output gain, 0-500. Default: 100
   --list-devices       List active render devices
   --help               Show this help
 
 For a virtual microphone, install a virtual audio cable and choose its render endpoint,
 for example --device "CABLE Input". Other apps then select the paired recording endpoint.
-The client accepts both legacy WMF1 mono PCM packets and Cloudflare Realtime
+The client accepts WMF2/legacy WMF1 mono PCM packets and Cloudflare Realtime
 WebSocket adapter protobuf packets carrying 48 kHz stereo PCM.
 """);
 }

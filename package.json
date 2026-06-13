@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
+    "test:worker": "node tests/realtime-publish.test.mjs",
     "typecheck": "tsc --noEmit",
     "client:build": "dotnet build client/WebMicForward.Client/WebMicForward.Client.csproj",
     "gui:build": "dotnet build client/WebMicForward.Gui/WebMicForward.Gui.csproj",
@@ -13,6 +14,7 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "4.20260613.1",
+    "esbuild": "0.28.1",
     "typescript": "6.0.3",
     "wrangler": "4.100.0"
   },

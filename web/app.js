@@ -1,6 +1,7 @@
 const TARGET_RATE = 48000;
 const FRAME_SAMPLES = 960;
-const MAGIC = [0x57, 0x4d, 0x46, 0x31]; // WMF1
+const MAGIC = [0x57, 0x4d, 0x46, 0x32]; // WMF2
+const AUDIO_PACKET_HEADER_BYTES = 24;
 const PRE_ROLL_FRAMES = 4;
 const MAX_BUFFERED_BYTES = 512 * 1024;
 
@@ -16,16 +17,19 @@ const elements = {
   disconnectButton: $("disconnectButton"),
   startMicButton: $("startMicButton"),
   stopMicButton: $("stopMicButton"),
+  inputGainInput: $("inputGainInput"),
   thresholdInput: $("thresholdInput"),
   hangoverInput: $("hangoverInput"),
   gateInput: $("gateInput"),
   statusLine: $("statusLine"),
   audioLine: $("audioLine"),
   waveCanvas: $("waveCanvas"),
+  inputGainValue: $("inputGainValue"),
   thresholdValue: $("thresholdValue"),
   hangoverValue: $("hangoverValue"),
   gateState: $("gateState"),
   rmsValue: $("rmsValue"),
+  peakValue: $("peakValue"),
   sentValue: $("sentValue"),
   skippedValue: $("skippedValue"),
   clientValue: $("clientValue")
@@ -39,6 +43,9 @@ const state = {
   stream: null,
   audioContext: null,
   sourceNode: null,
+  inputGainNode: null,
+  processedDestination: null,
+  processedStream: null,
   workletNode: null,
   silentGain: null,
   analyser: null,
@@ -50,6 +57,8 @@ const state = {
   lastRms: 0,
   lastPeak: 0,
   lastStatusSent: 0,
+  usingWorklet: false,
+  wakeLock: null,
   stats: {
     sentBytes: 0,
     sentFrames: 0,
@@ -89,6 +98,26 @@ function setStatus(text, className = "") {
 function setAudioLine(text, className = "") {
   elements.audioLine.textContent = text;
   elements.audioLine.className = className;
+}
+
+function formatMicError(error) {
+  const name = error?.name || "";
+  const message = error?.message || "";
+
+  if (name === "NotAllowedError" || name === "SecurityError") {
+    return "麦克风权限被拒绝。请在浏览器权限设置里允许本页面使用麦克风。";
+  }
+  if (name === "NotFoundError" || name === "DevicesNotFoundError") {
+    return "没有找到可用麦克风。";
+  }
+  if (name === "NotReadableError" || name === "TrackStartError") {
+    return "麦克风被其他应用占用，或系统阻止浏览器读取。";
+  }
+  if (!window.AudioContext && !window.webkitAudioContext) {
+    return "浏览器不支持 Web Audio，无法处理麦克风输入。";
+  }
+
+  return message || "麦克风启动失败。";
 }
 
 function buildWsUrl() {
@@ -221,53 +250,74 @@ async function startMic() {
       autoGainControl: false
     }
   });
+  state.stream = stream;
 
   const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
-  const audioContext = new AudioContextCtor({
-    latencyHint: "interactive",
-    sampleRate: TARGET_RATE
-  });
-  await audioContext.audioWorklet.addModule("/audio-worklet.js");
+  if (!AudioContextCtor) {
+    throw new Error("浏览器不支持 Web Audio，无法处理麦克风输入。");
+  }
+  const audioContext = createAudioContext(AudioContextCtor);
+  state.audioContext = audioContext;
+  if (audioContext.state === "suspended") {
+    await audioContext.resume();
+  }
 
   const sourceNode = audioContext.createMediaStreamSource(stream);
+  const inputGainNode = audioContext.createGain();
+  setInputGainNodeValue(inputGainNode);
   const analyser = audioContext.createAnalyser();
   analyser.fftSize = 2048;
+  state.sourceNode = sourceNode;
+  state.inputGainNode = inputGainNode;
+  state.analyser = analyser;
 
-  const workletNode = new AudioWorkletNode(audioContext, "mic-forward-processor", {
-    numberOfInputs: 1,
-    numberOfOutputs: 1,
-    outputChannelCount: [1],
-    processorOptions: {
-      targetRate: TARGET_RATE,
-      frameSamples: FRAME_SAMPLES
-    }
-  });
   const silentGain = audioContext.createGain();
   silentGain.gain.value = 0;
+  state.silentGain = silentGain;
 
-  workletNode.port.onmessage = (event) => {
-    if (event.data?.type === "frame") {
-      handleAudioFrame(event.data.frame);
-    }
-  };
+  const { workletNode, warning } = await createWorkletNode(audioContext);
+  if (state.transportMode === "ws" && !workletNode) {
+    throw new Error(`当前浏览器不支持 WebSocket PCM 采集。请切换到 Realtime SFU，或使用支持 AudioWorklet 的浏览器。${warning ? ` (${warning})` : ""}`);
+  }
 
-  sourceNode.connect(analyser);
-  sourceNode.connect(workletNode);
-  workletNode.connect(silentGain).connect(audioContext.destination);
+  sourceNode.connect(inputGainNode);
+  inputGainNode.connect(analyser);
+  if (workletNode) {
+    workletNode.port.onmessage = (event) => {
+      if (event.data?.type === "frame") {
+        handleAudioFrame(event.data.frame);
+      }
+    };
+    inputGainNode.connect(workletNode);
+    workletNode.connect(silentGain).connect(audioContext.destination);
+  } else {
+    inputGainNode.connect(silentGain).connect(audioContext.destination);
+  }
 
   let sfu = null;
+  let processedDestination = null;
+  let processedStream = null;
   if (state.transportMode === "sfu") {
-    sfu = await startRealtimePublish(stream);
+    processedDestination = audioContext.createMediaStreamDestination();
+    inputGainNode.connect(processedDestination);
+    processedStream = processedDestination.stream;
+    state.processedDestination = processedDestination;
+    state.processedStream = processedStream;
+    sfu = await startRealtimePublish(processedStream);
   }
 
   Object.assign(state, {
     stream,
+    processedDestination,
+    processedStream,
     sfu,
     audioContext,
     sourceNode,
+    inputGainNode,
     workletNode,
     silentGain,
     analyser,
+    usingWorklet: Boolean(workletNode),
     gateOpen: false,
     hangoverLeft: 0,
     preRoll: []
@@ -275,12 +325,51 @@ async function startMic() {
 
   elements.startMicButton.disabled = true;
   elements.stopMicButton.disabled = false;
-  setAudioLine(`${Math.round(audioContext.sampleRate)} Hz / mono / ${state.transportMode.toUpperCase()}`, "is-live");
+  const captureMode = workletNode ? "worklet" : "analyser";
+  setAudioLine(`${Math.round(audioContext.sampleRate)} Hz / mono / ${state.transportMode.toUpperCase()} / ${captureMode} / gain ${getInputGainPercent()}%`, "is-live");
+  await requestScreenWakeLock();
   startDrawing();
 }
 
-async function stopMic() {
+function createAudioContext(AudioContextCtor) {
+  try {
+    return new AudioContextCtor({
+      latencyHint: "interactive",
+      sampleRate: TARGET_RATE
+    });
+  } catch {
+    return new AudioContextCtor({ latencyHint: "interactive" });
+  }
+}
+
+async function createWorkletNode(audioContext) {
+  if (!audioContext.audioWorklet || typeof AudioWorkletNode === "undefined") {
+    return { workletNode: null, warning: "AudioWorklet is unavailable" };
+  }
+
+  try {
+    await audioContext.audioWorklet.addModule("/audio-worklet.js");
+    return {
+      workletNode: new AudioWorkletNode(audioContext, "mic-forward-processor", {
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        outputChannelCount: [1],
+        processorOptions: {
+          targetRate: TARGET_RATE,
+          frameSamples: FRAME_SAMPLES
+        }
+      }),
+      warning: ""
+    };
+  } catch (error) {
+    return { workletNode: null, warning: error?.message || String(error) };
+  }
+}
+
+async function stopMic(options = {}) {
+  const resetAudioLine = options.resetAudioLine !== false;
   cancelAnimationFrame(state.drawId);
+  await releaseScreenWakeLock();
   await stopRealtimePublish();
 
   if (state.workletNode) {
@@ -290,8 +379,16 @@ async function stopMic() {
   if (state.silentGain) {
     state.silentGain.disconnect();
   }
+  if (state.inputGainNode) {
+    state.inputGainNode.disconnect();
+  }
   if (state.sourceNode) {
     state.sourceNode.disconnect();
+  }
+  if (state.processedStream) {
+    for (const track of state.processedStream.getTracks()) {
+      track.stop();
+    }
   }
   if (state.stream) {
     for (const track of state.stream.getTracks()) {
@@ -304,20 +401,27 @@ async function stopMic() {
 
   Object.assign(state, {
     stream: null,
+    processedDestination: null,
+    processedStream: null,
     audioContext: null,
     sourceNode: null,
+    inputGainNode: null,
     workletNode: null,
     silentGain: null,
     analyser: null,
     sfu: null,
+    usingWorklet: false,
     gateOpen: false,
     hangoverLeft: 0,
-    preRoll: []
+    preRoll: [],
+    wakeLock: null
   });
 
   elements.startMicButton.disabled = false;
   elements.stopMicButton.disabled = true;
-  setAudioLine("麦克风未启动");
+  if (resetAudioLine) {
+    setAudioLine("麦克风未启动");
+  }
   drawIdleWaveform();
 }
 
@@ -326,6 +430,56 @@ function currentTransportMode() {
     return "sfu";
   }
   return "ws";
+}
+
+function getInputGainPercent() {
+  return Number(elements.inputGainInput.value);
+}
+
+function getInputGain() {
+  return getInputGainPercent() / 100;
+}
+
+function setInputGainNodeValue(node = state.inputGainNode) {
+  if (!node) {
+    return;
+  }
+
+  const value = getInputGain();
+  if (state.audioContext) {
+    node.gain.setTargetAtTime(value, state.audioContext.currentTime, 0.01);
+  } else {
+    node.gain.value = value;
+  }
+}
+
+async function requestScreenWakeLock() {
+  if (!("wakeLock" in navigator) || document.visibilityState !== "visible") {
+    return;
+  }
+
+  try {
+    state.wakeLock = await navigator.wakeLock.request("screen");
+    state.wakeLock.addEventListener("release", () => {
+      if (state.wakeLock?.released) {
+        state.wakeLock = null;
+      }
+    });
+  } catch (error) {
+    console.warn("Screen wake lock unavailable", error);
+  }
+}
+
+async function releaseScreenWakeLock() {
+  const wakeLock = state.wakeLock;
+  state.wakeLock = null;
+  if (wakeLock && !wakeLock.released) {
+    try {
+      await wakeLock.release();
+    } catch (error) {
+      console.warn("Failed to release screen wake lock", error);
+    }
+  }
 }
 
 async function startRealtimePublish(stream) {
@@ -352,7 +506,7 @@ async function startRealtimePublish(stream) {
     const offer = await pc.createOffer();
     await pc.setLocalDescription({
       type: offer.type,
-      sdp: enableOpusDtx(offer.sdp || "")
+      sdp: normalizeRealtimeSdp(enableOpusDtx(offer.sdp || ""))
     });
     await waitForIceGatheringComplete(pc, 2500);
 
@@ -437,10 +591,45 @@ async function postJson(url, data) {
   }
 
   if (!response.ok) {
-    throw new Error(parsed.error || `请求失败: ${response.status}`);
+    throw new Error(formatApiError(parsed, response.status));
   }
 
   return parsed;
+}
+
+function formatApiError(parsed, fallbackStatus) {
+  const parts = [];
+  if (parsed?.error) {
+    parts.push(parsed.error);
+  } else {
+    parts.push(`请求失败: ${fallbackStatus}`);
+  }
+
+  if (parsed?.operation) {
+    parts.push(`阶段: ${parsed.operation}`);
+  }
+  if (parsed?.status) {
+    parts.push(`HTTP ${parsed.status}`);
+  }
+
+  const details = parsed?.details;
+  if (details) {
+    if (details.errorCode) {
+      parts.push(`code: ${details.errorCode}`);
+    }
+    if (details.errorDescription) {
+      parts.push(details.errorDescription);
+    } else if (details.error) {
+      parts.push(typeof details.error === "string" ? details.error : JSON.stringify(details.error));
+    } else {
+      const serialized = JSON.stringify(details);
+      if (serialized && serialized !== "{}") {
+        parts.push(serialized.slice(0, 240));
+      }
+    }
+  }
+
+  return parts.join(" / ");
 }
 
 function waitForIceGatheringComplete(pc, timeoutMs) {
@@ -479,6 +668,14 @@ function enableOpusDtx(sdp) {
   }
 
   return sdp.replace(opus[0], `${opus[0]}\r\na=fmtp:${payloadType} usedtx=1`);
+}
+
+function normalizeRealtimeSdp(sdp) {
+  let normalized = sdp.replace(/\r?\n/g, "\r\n").replace(/\r(?!\n)/g, "\r\n");
+  if (!normalized.endsWith("\r\n")) {
+    normalized += "\r\n";
+  }
+  return normalized;
 }
 
 function handleAudioFrame(frame) {
@@ -573,6 +770,35 @@ function measureFrame(frame) {
   };
 }
 
+function handleAnalyserAudioState(samples) {
+  if (state.usingWorklet) {
+    return;
+  }
+
+  const { rms, peak } = measureByteSamples(samples);
+  state.lastRms = rms;
+  state.lastPeak = peak;
+
+  if (state.transportMode === "sfu") {
+    handleRealtimeAudioGate(rms, peak);
+    maybeSendSourceStatus();
+  }
+}
+
+function measureByteSamples(samples) {
+  let sum = 0;
+  let peak = 0;
+  for (let i = 0; i < samples.length; i += 1) {
+    const value = (samples[i] - 128) / 128;
+    sum += value * value;
+    peak = Math.max(peak, Math.abs(value));
+  }
+  return {
+    rms: Math.sqrt(sum / samples.length),
+    peak
+  };
+}
+
 function rememberPreRoll(frame) {
   state.preRoll.push(new Float32Array(frame));
   while (state.preRoll.length > PRE_ROLL_FRAMES) {
@@ -605,7 +831,7 @@ function sendFrame(frame) {
 }
 
 function encodeFrame(frame) {
-  const bytes = new ArrayBuffer(16 + frame.length * 2);
+  const bytes = new ArrayBuffer(AUDIO_PACKET_HEADER_BYTES + frame.length * 2);
   const view = new DataView(bytes);
   for (let i = 0; i < MAGIC.length; i += 1) {
     view.setUint8(i, MAGIC[i]);
@@ -614,8 +840,9 @@ function encodeFrame(frame) {
   view.setUint32(8, TARGET_RATE, true);
   view.setUint16(12, 1, true);
   view.setUint16(14, frame.length, true);
+  writeUint64LittleEndian(view, 16, Date.now() - (frame.length / TARGET_RATE) * 1000);
 
-  let offset = 16;
+  let offset = AUDIO_PACKET_HEADER_BYTES;
   for (let i = 0; i < frame.length; i += 1) {
     const sample = Math.max(-1, Math.min(1, frame[i]));
     view.setInt16(offset, sample < 0 ? sample * 32768 : sample * 32767, true);
@@ -623,6 +850,12 @@ function encodeFrame(frame) {
   }
   state.seq = (state.seq + 1) >>> 0;
   return bytes;
+}
+
+function writeUint64LittleEndian(view, offset, value) {
+  const normalized = Math.max(0, Math.floor(Number(value) || 0));
+  view.setUint32(offset, normalized >>> 0, true);
+  view.setUint32(offset + 4, Math.floor(normalized / 0x100000000) >>> 0, true);
 }
 
 function sendJson(data) {
@@ -656,6 +889,7 @@ function startDrawing() {
   const draw = () => {
     state.drawId = requestAnimationFrame(draw);
     state.analyser.getByteTimeDomainData(samples);
+    handleAnalyserAudioState(samples);
     drawWaveform(context, canvas, samples);
   };
 
@@ -722,11 +956,14 @@ function formatBytes(bytes) {
 }
 
 function refreshUi() {
+  elements.inputGainValue.textContent = `${getInputGainPercent()}%`;
   elements.thresholdValue.textContent = Number(elements.thresholdInput.value).toFixed(3);
   elements.hangoverValue.textContent = `${elements.hangoverInput.value} ms`;
   elements.gateState.textContent = state.gateOpen ? "打开" : "关闭";
   elements.gateState.className = state.gateOpen ? "is-live" : "is-quiet";
   elements.rmsValue.textContent = state.lastRms.toFixed(3);
+  elements.peakValue.textContent = state.lastPeak.toFixed(3);
+  elements.peakValue.className = state.lastPeak >= 0.98 ? "is-error" : "";
   elements.sentValue.textContent = state.transportMode === "sfu"
     ? `${state.stats.sentFrames} 帧`
     : formatBytes(state.stats.sentBytes);
@@ -745,16 +982,28 @@ elements.copyClientUrlButton.addEventListener("click", () => {
 elements.startMicButton.addEventListener("click", () => {
   startMic().catch((error) => {
     console.error(error);
-    setAudioLine(error.message || "麦克风启动失败", "is-error");
-    stopMic();
+    void stopMic({ resetAudioLine: false })
+      .catch((cleanupError) => console.warn("Failed to clean up microphone state", cleanupError))
+      .finally(() => {
+        setAudioLine(formatMicError(error), "is-error");
+      });
   });
 });
 elements.stopMicButton.addEventListener("click", stopMic);
+elements.inputGainInput.addEventListener("input", () => {
+  setInputGainNodeValue();
+  refreshUi();
+});
 elements.thresholdInput.addEventListener("input", refreshUi);
 elements.hangoverInput.addEventListener("input", refreshUi);
 elements.gateInput.addEventListener("change", refreshUi);
 elements.roomInput.addEventListener("input", updateClientUrl);
 elements.tokenInput.addEventListener("input", updateClientUrl);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && state.stream && !state.wakeLock) {
+    void requestScreenWakeLock();
+  }
+});
 
 initRoom();
 updateClientUrl();

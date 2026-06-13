@@ -193,7 +193,7 @@ label {
 
 .control-row {
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) minmax(220px, 1fr) auto;
+  grid-template-columns: minmax(180px, 1fr) minmax(220px, 1fr) minmax(220px, 1fr) auto;
   gap: 18px;
   align-items: center;
 }
@@ -218,7 +218,7 @@ label {
 
 .stats-grid {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 12px;
   margin-top: 16px;
 }
